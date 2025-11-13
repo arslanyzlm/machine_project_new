@@ -68,8 +68,7 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
 
     try {
       setSaving(true);
-      setError(null);
-
+      setError(null); 
       const { error: updateError } = await supabase
         .from('machines')
         .update({
@@ -89,6 +88,7 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
           previous_status: machine.current_status,
           comment: comment.trim(),
           changed_by: user.id,
+          changed_at: new Date().toISOString(),
         });
 
       if (historyError) throw historyError;

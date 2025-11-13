@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LogOut, User, Shield, Settings as SettingsIcon, History as HistoryIcon, LogIn } from 'lucide-react';
+import { LogOut, User, Shield, Settings as SettingsIcon, History as HistoryIcon, LogIn, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import MachineOverview from './MachineOverview';
@@ -11,6 +11,7 @@ import AssignmentManagement from './AssignmentManagement';
 import MachineManagement from './MachineManagement';
 import StatusTypeManagement from './StatusTypeManagement';
 import HistoryPage from './HistoryPage';
+import ReportsPage from './ReportsPage';
 import AuthForm from './AuthForm';
 import LanguageSwitcher from './LanguageSwitcher';
 import { Database } from '../lib/database.types';
@@ -23,13 +24,15 @@ export default function Dashboard() {
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'management'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'reports' | 'management'>('overview');
+  // const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'management'>('overview');
   const [showAuthModal, setShowAuthModal] = useState(false);
 
   const isAuthenticated = !!user;
   const canUpdate = isAuthenticated && (profile?.role === 'admin' || profile?.role === 'team_leader' || profile?.role === 'operator');
   const isAdmin = profile?.role === 'admin';
   const isTeamLeader = profile?.role === 'team_leader';
+  const canAccessReports = !user || profile?.role === 'admin' || profile?.role === 'team_leader';
 
   const handleMachineSelect = (machine: Machine) => {
     if (canUpdate) {
@@ -102,6 +105,19 @@ export default function Dashboard() {
                   <HistoryIcon className="w-4 h-4" />
                   <span>{t('dashboard.history')}</span>
                 </button>
+                {canAccessReports && (
+                  <button
+                    onClick={() => setActiveTab('reports')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 ${
+                      activeTab === 'reports'
+                        ? 'bg-gray-900 text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Raporlar</span>
+                  </button>
+                )}
                 {(isAdmin || isTeamLeader) && (
                   <button
                     onClick={() => setActiveTab('management')}
@@ -173,6 +189,8 @@ export default function Dashboard() {
         )}
 
         {activeTab === 'history' && <HistoryPage />}
+
+        {activeTab === 'reports' && canAccessReports && <ReportsPage />}
 
         {activeTab === 'management' && (
           <div className="space-y-8">
