@@ -1,15 +1,24 @@
 import { Clock, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Database } from '../lib/database.types';
 
-type Machine = Database['public']['Tables']['machines']['Row'];
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  last_updated_at: string | null;
+  last_updated_by: number | null;
+  created_at: string;
+  department_id: number | null;
+}
 
 interface MachineCardProps {
   machine: Machine;
   onClick: () => void;
   canUpdate: boolean;
   statusColor: string;
-  maxLines?: number; // NEW
+  maxLines?: number;
 }
 
 const colorMap: Record<string, { color: string; textColor: string; bgColor: string; borderColor: string }> = {
@@ -63,12 +72,12 @@ const colorMap: Record<string, { color: string; textColor: string; bgColor: stri
   },
 };
 
-export default function MachineCard({ machine, onClick, canUpdate, statusColor, maxLines=2, }: MachineCardProps) {
+export default function MachineCard({ machine, onClick, canUpdate, statusColor, maxLines = 2 }: MachineCardProps) {
   const { t } = useTranslation();
   const config = colorMap[statusColor] || colorMap.gray;
-  const lastUpdate = new Date(machine.last_updated_at);
+  const lastUpdate = machine.last_updated_at ? new Date(machine.last_updated_at) : null;
 
-  const clampStyle: React.CSSProperties = { // NEW
+  const clampStyle: React.CSSProperties = {
     display: '-webkit-box',
     WebkitLineClamp: maxLines,
     WebkitBoxOrient: 'vertical',
@@ -94,7 +103,6 @@ export default function MachineCard({ machine, onClick, canUpdate, statusColor, 
         <p className="text-xs text-gray-500 mb-3" style={clampStyle}>
           {machine.description}
         </p>
-        // <p className="text-xs text-gray-500 mb-3 line-clamp-2">{machine.description}</p>
       )}
 
       <div className="flex items-center justify-between">
@@ -103,15 +111,17 @@ export default function MachineCard({ machine, onClick, canUpdate, statusColor, 
         </div>
       </div>
 
-      <div className="mt-3 pt-3 border-t border-gray-200 flex items-center text-xs text-gray-500">
-        <Clock className="w-3 h-3 mr-1" />
-        <span>
-          {t('machines.updatedAt', {
-            date: lastUpdate.toLocaleDateString(),
-            time: lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          })}
-        </span>
-      </div>
+      {lastUpdate && (
+        <div className="mt-3 pt-3 border-t border-gray-200 flex items-center text-xs text-gray-500">
+          <Clock className="w-3 h-3 mr-1" />
+          <span>
+            {t('machines.updatedAt', {
+              date: lastUpdate.toLocaleDateString(),
+              time: lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            })}
+          </span>
+        </div>
+      )}
 
       {statusColor === 'red' && (
         <div className="mt-2 flex items-center text-xs text-red-600">

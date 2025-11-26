@@ -1,17 +1,39 @@
 import { useEffect, useState } from 'react';
 import { History, Clock, User, MessageSquare } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { api } from '../lib/api';
 
-type StatusHistoryRow = Database['public']['Tables']['status_history']['Row'];
-type StatusType = Database['public']['Tables']['status_types']['Row'];
+interface StatusHistoryRow {
+  id: number;
+  machine_id: number;
+  status: string;
+  previous_status: string | null;
+  comment: string | null;
+  changed_by: number;
+  changed_at: string;
+}
+
+interface StatusType {
+  id: number;
+  name: string;
+  color: string; // 'green', 'red', 'gray'...
+  is_default: boolean;
+  is_active: boolean;
+  display_order: number;
+  created_at: string;
+  created_by: number | null;
+}
+
+interface Profile {
+  id: number;
+  full_name: string;
+}
 
 interface HistoryEntry extends StatusHistoryRow {
   user_name?: string;
 }
 
 interface StatusHistoryProps {
-  machineId: string;
+  machineId: number;      // artık number
   machineName: string;
 }
 
@@ -21,76 +43,64 @@ export default function StatusHistory({ machineId, machineName }: StatusHistoryP
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadHistory();
-    loadStatusTypes();
+    if (!machineId) return;
 
-    const channel = supabase
-      .channel('status-history-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'status_history',
-          filter: `machine_id=eq.${machineId}`,
-        },
-        () => {
-          loadHistory();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
+    const loadAll = async () => {
+      setLoading(true);
+      try {
+        await Promise.all([loadHistory(), loadStatusTypes()]);
+      } finally {
+        setLoading(false);
+      }
     };
+
+    loadAll();
   }, [machineId]);
 
   const loadHistory = async () => {
     try {
-      setLoading(true);
+      // backend: GET /machines/{id}/history?limit=20
+      const historyData = await api.get<StatusHistoryRow[]>(
+        `/machines/${machineId}/history?limit=20`
+      );
 
-      const { data: historyData, error: historyError } = await supabase
-        .from('status_history')
-        .select('*')
-        .eq('machine_id', machineId)
-        .order('changed_at', { ascending: false })
-        .limit(20);
+      if (!historyData || historyData.length === 0) {
+        setHistory([]);
+        return;
+      }
 
-      if (historyError) throw historyError;
+      const userIds = Array.from(new Set(historyData.map((h) => h.changed_by)));
+      let userMap = new Map<number, string>();
 
-      const userIds = [...new Set(historyData?.map(h => h.changed_by) || [])];
+      if (userIds.length > 0) {
+        // backend: GET /profiles?ids=1,2,3
+        const profiles = await api.get<Profile[]>(
+          `/profiles?ids=${userIds.join(',')}`
+        );
+        userMap = new Map(profiles.map((p) => [p.id, p.full_name]));
+      }
 
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('id, full_name')
-        .in('id', userIds);
-
-      if (profilesError) throw profilesError;
-
-      const userMap = new Map(profiles?.map(p => [p.id, p.full_name]) || []);
-
-      const enrichedHistory = historyData?.map(h => ({
-        ...h,
-        user_name: userMap.get(h.changed_by) || 'Unknown User',
-      })) || [];
+      const enrichedHistory: HistoryEntry[] = historyData
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime()
+        )
+        .map((h) => ({
+          ...h,
+          user_name: userMap.get(h.changed_by) || 'Bilinmeyen Kullanıcı',
+        }));
 
       setHistory(enrichedHistory);
     } catch (error) {
       console.error('Error loading history:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
   const loadStatusTypes = async () => {
     try {
-      const { data, error } = await supabase
-        .from('status_types')
-        .select('*')
-        .eq('is_active', true)
-        .order('display_order');
-
-      if (error) throw error;
+      // backend: GET /status-types?only_active=true
+      const data = await api.get<StatusType[]>(`/status-types?only_active=true`);
       setStatusTypes(data || []);
     } catch (error) {
       console.error('Error loading status types:', error);
@@ -98,7 +108,7 @@ export default function StatusHistory({ machineId, machineName }: StatusHistoryP
   };
 
   const getStatusColor = (status: string) => {
-    const statusType = statusTypes.find(st => st.name === status);
+    const statusType = statusTypes.find((st) => st.name === status);
     if (!statusType) return 'bg-gray-100 text-gray-800 border-gray-200';
 
     const colorMap: Record<string, string> = {
@@ -123,7 +133,10 @@ export default function StatusHistory({ machineId, machineName }: StatusHistoryP
       </div>
 
       <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-        <p className="text-sm text-gray-600">Makine: <span className="font-semibold text-gray-900">{machineName}</span></p>
+        <p className="text-sm text-gray-600">
+          Makine:{' '}
+          <span className="font-semibold text-gray-900">{machineName}</span>
+        </p>
       </div>
 
       {loading ? (
@@ -146,13 +159,21 @@ export default function StatusHistory({ machineId, machineName }: StatusHistoryP
                 className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex items-start justify-between mb-3">
-                  <div className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(entry.status)}`}>
+                  <div
+                    className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(
+                      entry.status
+                    )}`}
+                  >
                     {entry.status}
                   </div>
                   <div className="flex items-center text-xs text-gray-500">
                     <Clock className="w-3 h-3 mr-1" />
                     <span>
-                      {changeDate.toLocaleDateString()} {changeDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {changeDate.toLocaleDateString()}{' '}
+                      {changeDate.toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
                     </span>
                   </div>
                 </div>

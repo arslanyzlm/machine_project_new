@@ -1,11 +1,35 @@
 import { useEffect, useState } from 'react';
 import { Settings, Plus, X, Trash2 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 
-type Machine = Database['public']['Tables']['machines']['Row'];
-type Department = Database['public']['Tables']['departments']['Row'];
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  department_id: number | null;
+
+  // backend'de var ama burada kullanmıyoruz, tip uyuşsun diye ekliyoruz:
+  last_updated_at?: string | null;
+  last_updated_by?: number | null;
+  created_at?: string;
+}
+
+interface Department {
+  id: number;
+  name: string;
+  description?: string | null;
+}
+
+interface DepartmentLeader {
+  id: number;
+  department_id: number;
+  user_id: number;
+  assigned_at: string;
+  assigned_by: number | null;
+}
 
 export default function MachineManagement() {
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -16,72 +40,60 @@ export default function MachineManagement() {
     machine_code: '',
     machine_name: '',
     description: '',
-    department_id: '',
+    department_id: '', // select string, submit'te number'a çeviriyoruz
   });
-  const { user, profile } = useAuth();
 
-  // useEffect(() => {
-  //   loadData();
-  // }, []);
-  
-  const [teamLeaderDepartments, setTeamLeaderDepartments] = useState<string[]>([]); // NEW
+  const [teamLeaderDepartments, setTeamLeaderDepartments] = useState<number[]>([]);
+  const { profile } = useAuth();
+
   useEffect(() => {
     loadData();
-  // profile değiştiğinde erişim kapsamı da değişebilir
-  }, [profile?.role, user?.id]);
-  
+    // rol veya profil değişince erişim de değişebilir
+  }, [profile?.role, profile?.id]);
 
   const loadData = async () => {
     try {
       setLoading(true);
 
-      const { data: depts } = await supabase.from('departments').select('*').order('name');
-      setDepartments(depts || []);
+      // 1) tüm bölümler ve makineleri çek
+      const [depts, allMachines] = await Promise.all([
+        api.get<Department[]>('/departments'),
+        api.get<Machine[]>('/machines'),
+      ]);
 
-      // let machineQuery = supabase.from('machines').select('*').order('machine_code');
-      if (profile?.role === 'team_leader') {
-        const { data: myDepts } = await supabase
-          .from('department_leaders')
-          .select('department_id')
-          .eq('user_id', user?.id);
+      // bölümleri isme göre sırala
+      const sortedDepts = (depts || [])
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setDepartments(sortedDepts);
 
-        const deptIds = myDepts?.map(d => d.department_id) || [];
+      // 2) team_leader ise sadece kendi sorumlu olduğu bölümlerin makineleri
+      if (profile?.role === 'team_leader' && profile.id) {
+        const leaders = await api.get<DepartmentLeader[]>('/department-leaders', {
+          params: { user_id: profile.id },
+        });
+
+        const deptIds = (leaders || []).map((d) => d.department_id);
         setTeamLeaderDepartments(deptIds);
 
-        // Makineleri sadece kendi bölümlerine göre göster
-        let machineQuery = supabase.from('machines').select('*').order('machine_code');
-        if (deptIds.length > 0) {
-          machineQuery = machineQuery.in('department_id', deptIds);
-        } else {
-          // Hiç bölümü yoksa boş sonuç
-          machineQuery = machineQuery.eq('id', '00000000-0000-0000-0000-000000000000');
-        }
-        const { data: machinesData } = await machineQuery;
-        setMachines(machinesData || []);
+        const filteredMachines = (allMachines || []).filter(
+          (m) => m.department_id !== null && deptIds.includes(m.department_id),
+        );
+
+        // makineleri koda göre sırala
+        setMachines(
+          filteredMachines
+            .slice()
+            .sort((a, b) => a.machine_code.localeCompare(b.machine_code)),
+        );
       } else {
-        // Admin vb. tüm makineler
-        const { data: machinesData } = await supabase
-          .from('machines')
-          .select('*')
-          .order('machine_code');
-        setMachines(machinesData || []);
+        // admin (veya ileride başka rol eklenirse) → tüm makineler
+        setMachines(
+          (allMachines || [])
+            .slice()
+            .sort((a, b) => a.machine_code.localeCompare(b.machine_code)),
+        );
       }
-      // if (profile?.role === 'team_leader') {
-      //   const { data: myDepts } = await supabase
-      //     .from('department_leaders')
-      //     .select('department_id')
-      //     .eq('user_id', user?.id);
-
-      //   const deptIds = myDepts?.map((d) => d.department_id) || [];
-      //   if (deptIds.length > 0) {
-      //     machineQuery = machineQuery.in('department_id', deptIds);
-      //   } else {
-      //     machineQuery = machineQuery.eq('id', '00000000-0000-0000-0000-000000000000');
-      //   }
-      // }
-
-      // const { data: machinesData } = await machineQuery;
-      // setMachines(machinesData || []);
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -89,32 +101,49 @@ export default function MachineManagement() {
     }
   };
 
-  // --- Bölüm listesi: admin tümünü görür, team_leader sadece kendi bölümlerini ---
+  // --- Bölüm listesi: admin tümünü görür, team_leader sadece kendi bölümlerini --- //
   const availableDepartments: Department[] =
     profile?.role === 'admin'
       ? departments
-      : departments.filter(dept => teamLeaderDepartments.includes(dept.id));
+      : departments.filter((dept) => teamLeaderDepartments.includes(dept.id));
 
   // Modal açıldığında ve yalnızca 1 uygun bölüm varsa otomatik seç
   useEffect(() => {
     if (showModal && profile?.role === 'team_leader' && availableDepartments.length === 1) {
-      setFormData(prev => ({ ...prev, department_id: availableDepartments[0].id }));
+      setFormData((prev) => ({
+        ...prev,
+        department_id: String(availableDepartments[0].id),
+      }));
     }
   }, [showModal, profile?.role, availableDepartments]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const chosenDeptId = formData.department_id
+      ? Number(formData.department_id)
+      : null;
+
+    // Ek güvenlik: team_leader sadece kendi departmanlarına makine ekleyebilsin
+    if (
+      profile?.role === 'team_leader' &&
+      chosenDeptId !== null &&
+      !teamLeaderDepartments.includes(chosenDeptId)
+    ) {
+      alert('Bu bölüme makine ekleme yetkiniz yok.');
+      return;
+    }
+
     try {
-      const { error } = await supabase.from('machines').insert({
+      const payload = {
         machine_code: formData.machine_code,
         machine_name: formData.machine_name,
         description: formData.description,
-        current_status: 'Beklemede',
-        department_id: formData.department_id || null,
-      });
+        current_status: 'Beklemede', // ilk durum
+        department_id: chosenDeptId,
+      };
 
-      if (error) throw error;
+      await api.post<Machine>('/machines', payload);
 
       setFormData({
         machine_code: '',
@@ -123,54 +152,27 @@ export default function MachineManagement() {
         department_id: '',
       });
       setShowModal(false);
-      loadData();
+      await loadData();
     } catch (error) {
       console.error('Error adding machine:', error);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this machine?')) return;
+  const handleDelete = async (id: number) => {
+    if (!confirm('Bu makineyi silmek istediğinizden emin misiniz?')) return;
 
     try {
-      const { error } = await supabase.from('machines').delete().eq('id', id);
-      if (error) throw error;
-      loadData();
+      await api.del(`/machines/${id}`);
+      await loadData();
     } catch (error) {
       console.error('Error deleting machine:', error);
     }
   };
 
-  const getDepartmentName = (deptId: string | null) => {
-    if (!deptId) return 'Unassigned';
-    return departments.find((d) => d.id === deptId)?.name || 'Unknown';
+  const getDepartmentName = (deptId: number | null) => {
+    if (deptId == null) return 'Atanmamış';
+    return departments.find((d) => d.id === deptId)?.name || 'Bilinmiyor';
   };
-
-
-  // useEffect(() => {
-  //   if (profile?.role === 'team_leader') {
-  //     loadTeamLeaderDepartments();
-  //   }
-  // }, [profile?.role, user?.id]);
-
-  // const loadTeamLeaderDepartments = async () => {
-  //   try {
-  //     const { data } = await supabase
-  //       .from('department_leaders')
-  //       .select('department_id')
-  //       .eq('user_id', user?.id);
-
-  //     setTeamLeaderDepartments(data?.map(d => d.department_id) || []);
-  //   } catch (error) {
-  //     console.error('Error loading team leader departments:', error);
-  //   }
-  // };
-
-    // profile?.role === 'admin'
-    //   ? departments
-    //   : departments.filter((dept) =>
-    //       machines.some((m) => m.department_id === dept.id)
-    //     );
 
   if (loading) {
     return (
@@ -195,13 +197,6 @@ export default function MachineManagement() {
           <Plus className="w-4 h-4" />
           <span>Makine Ekle</span>
         </button>
-        {/* <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center space-x-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Makine Ekle</span>
-        </button> */}
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -233,7 +228,9 @@ export default function MachineManagement() {
                 <td className="px-6 py-4 text-sm font-medium text-gray-900">
                   {machine.machine_code}
                 </td>
-                <td className="px-6 py-4 text-sm text-gray-600">{machine.machine_name}</td>
+                <td className="px-6 py-4 text-sm text-gray-600">
+                  {machine.machine_name}
+                </td>
                 <td className="px-6 py-4 text-sm text-gray-600">
                   {getDepartmentName(machine.department_id)}
                 </td>
@@ -275,7 +272,9 @@ export default function MachineManagement() {
                 <input
                   type="text"
                   value={formData.machine_code}
-                  onChange={(e) => setFormData({ ...formData, machine_code: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, machine_code: e.target.value })
+                  }
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                   placeholder="e.g., M006"
                   required
@@ -289,7 +288,9 @@ export default function MachineManagement() {
                 <input
                   type="text"
                   value={formData.machine_name}
-                  onChange={(e) => setFormData({ ...formData, machine_name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, machine_name: e.target.value })
+                  }
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                   placeholder="e.g., CNC Machine B"
                   required
@@ -302,7 +303,9 @@ export default function MachineManagement() {
                 </label>
                 <textarea
                   value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
                   rows={2}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                   placeholder="Kısa açıklama"
@@ -315,7 +318,9 @@ export default function MachineManagement() {
                 </label>
                 <select
                   value={formData.department_id}
-                  onChange={(e) => setFormData({ ...formData, department_id: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, department_id: e.target.value })
+                  }
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                   required
                 >

@@ -1,5 +1,13 @@
 import { useState } from 'react';
-import { LogOut, User, Shield, Settings as SettingsIcon, History as HistoryIcon, LogIn, FileText } from 'lucide-react';
+import {
+  LogOut,
+  User,
+  Shield,
+  Settings as SettingsIcon,
+  History as HistoryIcon,
+  LogIn,
+  FileText,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import MachineOverview from './MachineOverview';
@@ -14,22 +22,38 @@ import HistoryPage from './HistoryPage';
 import ReportsPage from './ReportsPage';
 import AuthForm from './AuthForm';
 import LanguageSwitcher from './LanguageSwitcher';
-import { Database } from '../lib/database.types';
 
-type Machine = Database['public']['Tables']['machines']['Row'];
+// Backend ile uyumlu Machine tipi
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  last_updated_at: string;
+  last_updated_by: number | null;
+  created_at: string;
+  department_id: number | null;
+}
 
 export default function Dashboard() {
   const { t } = useTranslation();
   const { user, profile, signOut } = useAuth();
+
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'reports' | 'management'>('overview');
-  // const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'management'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'reports' | 'management'>(
+    'overview'
+  );
   const [showAuthModal, setShowAuthModal] = useState(false);
 
   const isAuthenticated = !!user;
-  const canUpdate = isAuthenticated && (profile?.role === 'admin' || profile?.role === 'team_leader' || profile?.role === 'operator');
+  const canUpdate =
+    isAuthenticated &&
+    (profile?.role === 'admin' ||
+      profile?.role === 'team_leader' ||
+      profile?.role === 'operator');
   const isAdmin = profile?.role === 'admin';
   const isTeamLeader = profile?.role === 'team_leader';
   const canAccessReports = !user || profile?.role === 'admin' || profile?.role === 'team_leader';
@@ -45,7 +69,7 @@ export default function Dashboard() {
   };
 
   const handleStatusUpdate = () => {
-    setRefreshKey(prev => prev + 1);
+    setRefreshKey((prev) => prev + 1);
     setSelectedMachine(null);
     setShowHistory(false);
   };
@@ -78,7 +102,9 @@ export default function Dashboard() {
                   <Shield className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h1 className="text-lg font-bold text-gray-900">{t('dashboard.title')}</h1>
+                  <h1 className="text-lg font-bold text-gray-900">
+                    {t('dashboard.title')}
+                  </h1>
                   <p className="text-xs text-gray-500">{t('dashboard.subtitle')}</p>
                 </div>
               </div>
@@ -94,6 +120,7 @@ export default function Dashboard() {
                 >
                   {t('dashboard.overview')}
                 </button>
+
                 <button
                   onClick={() => setActiveTab('history')}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 ${
@@ -105,6 +132,7 @@ export default function Dashboard() {
                   <HistoryIcon className="w-4 h-4" />
                   <span>{t('dashboard.history')}</span>
                 </button>
+
                 {canAccessReports && (
                   <button
                     onClick={() => setActiveTab('reports')}
@@ -118,6 +146,7 @@ export default function Dashboard() {
                     <span>Raporlar</span>
                   </button>
                 )}
+
                 {(isAdmin || isTeamLeader) && (
                   <button
                     onClick={() => setActiveTab('management')}
@@ -141,9 +170,15 @@ export default function Dashboard() {
                   <div className="text-right">
                     <div className="flex items-center space-x-2">
                       <User className="w-4 h-4 text-gray-400" />
-                      <p className="text-sm font-medium text-gray-900">{profile?.full_name}</p>
+                      <p className="text-sm font-medium text-gray-900">
+                        {profile?.full_name}
+                      </p>
                     </div>
-                    <div className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeColor(profile?.role || 'operator')}`}>
+                    <div
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeColor(
+                        profile?.role || 'operator'
+                      )}`}
+                    >
                       {formatRole(profile?.role || 'operator')}
                     </div>
                   </div>
@@ -152,7 +187,9 @@ export default function Dashboard() {
                     className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                   >
                     <LogOut className="w-4 h-4" />
-                    <span className="text-sm font-medium">{t('common.signOut')}</span>
+                    <span className="text-sm font-medium">
+                      {t('common.signOut')}
+                    </span>
                   </button>
                 </>
               ) : (
@@ -165,7 +202,9 @@ export default function Dashboard() {
                     className="flex items-center space-x-2 px-4 py-2 bg-gray-900 text-white hover:bg-gray-800 rounded-lg transition-colors"
                   >
                     <LogIn className="w-4 h-4" />
-                    <span className="text-sm font-medium">{t('common.signIn')}</span>
+                    <span className="text-sm font-medium">
+                      {t('common.signIn')}
+                    </span>
                   </button>
                 </>
               )}
@@ -181,7 +220,7 @@ export default function Dashboard() {
 
             {showHistory && selectedMachine && (
               <StatusHistory
-                machineId={selectedMachine.id}
+                machineId={selectedMachine.id} // StatusHistory şu an string bekliyorsa
                 machineName={`${selectedMachine.machine_code} - ${selectedMachine.machine_name}`}
               />
             )}
@@ -210,7 +249,6 @@ export default function Dashboard() {
                 <AssignmentManagement type="machine" />
               </>
             )}
-            {/* {(isAdmin || isTeamLeader) && <AssignmentManagement type="machine" />} */}
           </div>
         )}
       </main>

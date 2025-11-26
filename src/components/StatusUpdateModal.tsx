@@ -1,12 +1,31 @@
 import { useState, useEffect } from 'react';
 import { X, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 
-type Machine = Database['public']['Tables']['machines']['Row'];
-type StatusType = Database['public']['Tables']['status_types']['Row'];
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  last_updated_at: string;
+  last_updated_by: number | null;
+  created_at: string;
+  department_id: number | null;
+}
+
+interface StatusType {
+  id: number;
+  name: string;
+  color: string; // 'green', 'red', 'gray'...
+  is_default: boolean;
+  is_active: boolean;
+  display_order: number;
+  created_at: string;
+  created_by: number | null;
+}
 
 interface StatusUpdateModalProps {
   machine: Machine;
@@ -25,14 +44,21 @@ const colorMap: Record<string, { bg: string; text: string; border: string }> = {
   gray: { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
 };
 
-export default function StatusUpdateModal({ machine, onClose, onUpdate }: StatusUpdateModalProps) {
+export default function StatusUpdateModal({
+  machine,
+  onClose,
+  onUpdate,
+}: StatusUpdateModalProps) {
   const { t } = useTranslation();
+  const { user, profile } = useAuth();
+
   const [statusTypes, setStatusTypes] = useState<StatusType[]>([]);
-  const [selectedStatus, setSelectedStatus] = useState<string>(machine.current_status);
+  const [selectedStatus, setSelectedStatus] = useState<string>(
+    machine.current_status
+  );
   const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { user, profile } = useAuth();
 
   useEffect(() => {
     loadStatusTypes();
@@ -40,16 +66,12 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
 
   const loadStatusTypes = async () => {
     try {
-      const { data, error } = await supabase
-        .from('status_types')
-        .select('*')
-        .eq('is_active', true)
-        .order('display_order');
-
-      if (error) throw error;
-      setStatusTypes(data || []);
-    } catch (error) {
-      console.error('Error loading status types:', error);
+      // backend: GET /status-types?only_active=true
+      const data = await api.get<StatusType[]>('/status-types?only_active=true');
+      data.sort((a, b) => a.display_order - b.display_order);
+      setStatusTypes(data);
+    } catch (err) {
+      console.error('Error loading status types:', err);
     }
   };
 
@@ -68,35 +90,23 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
 
     try {
       setSaving(true);
-      setError(null); 
-      const { error: updateError } = await supabase
-        .from('machines')
-        .update({
-          current_status: selectedStatus,
-          last_updated_at: new Date().toISOString(),
-          last_updated_by: user.id,
-        })
-        .eq('id', machine.id);
+      setError(null);
 
-      if (updateError) throw updateError;
+      // backend: POST /machines/{id}/status
+      // Bu endpoint hem makine durumunu güncellesin
+      // hem de status_history'ye kayıt atsın.
+      await api.post(`/machines/${machine.id}/status`, {
+        status: selectedStatus,
+        comment: comment.trim() || null,
+        changed_by: user.id, // şimdilik buradan gönderiyoruz
+      });
 
-      const { error: historyError } = await supabase
-        .from('status_history')
-        .insert({
-          machine_id: machine.id,
-          status: selectedStatus,
-          previous_status: machine.current_status,
-          comment: comment.trim(),
-          changed_by: user.id,
-          changed_at: new Date().toISOString(),
-        });
-
-      if (historyError) throw historyError;
-
-      onUpdate();
+      onUpdate(); // parent listeyi/overview’ı refresh etsin
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update machine status');
+      setError(
+        err instanceof Error ? err.message : 'Failed to update machine status'
+      );
     } finally {
       setSaving(false);
     }
@@ -106,7 +116,9 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h3 className="text-xl font-bold text-gray-900">{t('status.updateStatus')}</h3>
+          <h3 className="text-xl font-bold text-gray-900">
+            {t('status.updateStatus')}
+          </h3>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -121,7 +133,9 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
               {t('machines.title')}
             </label>
             <div className="bg-gray-50 p-3 rounded-lg">
-              <p className="font-medium text-gray-900">{machine.machine_code}</p>
+              <p className="font-medium text-gray-900">
+                {machine.machine_code}
+              </p>
               <p className="text-sm text-gray-600">{machine.machine_name}</p>
             </div>
           </div>
@@ -152,7 +166,10 @@ export default function StatusUpdateModal({ machine, onClose, onUpdate }: Status
           </div>
 
           <div>
-            <label htmlFor="comment" className="block text-sm font-semibold text-gray-700 mb-2">
+            <label
+              htmlFor="comment"
+              className="block text-sm font-semibold text-gray-700 mb-2"
+            >
               {t('status.commentOptional')}
             </label>
             <textarea

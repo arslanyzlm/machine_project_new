@@ -1,14 +1,82 @@
 import { useEffect, useState } from 'react';
-import { History, Filter, ArrowRight, Calendar, User as UserIcon, MessageSquare } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import {
+  History,
+  Filter,
+  ArrowRight,
+  Calendar,
+  User as UserIcon,
+  MessageSquare,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTranslation } from 'react-i18next';
+import { api } from '../lib/api';
 
-type StatusHistory = Database['public']['Tables']['status_history']['Row'];
-type Machine = Database['public']['Tables']['machines']['Row'];
-type Department = Database['public']['Tables']['departments']['Row'];
-type StatusType = Database['public']['Tables']['status_types']['Row'];
+// ---- API tipleri ----
+interface StatusHistory {
+  id: number;
+  machine_id: number;
+  status: string;
+  previous_status: string | null;
+  comment: string | null;
+  changed_by: number;
+  changed_at: string;
+}
+
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  last_updated_at: string | null;
+  last_updated_by: number | null;
+  created_at: string;
+  department_id: number | null;
+}
+
+interface Department {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+  created_by: number | null;
+}
+
+interface StatusType {
+  id: number;
+  name: string;
+  color: string;
+  is_default: boolean;
+  is_active: boolean;
+  display_order: number;
+  created_at: string;
+  created_by: number | null;
+}
+
+interface Profile {
+  id: number;
+  email: string;
+  full_name: string;
+  role: 'admin' | 'team_leader' | 'operator';
+  created_at: string;
+  updated_at: string;
+}
+
+interface MachineOperator {
+  id: number;
+  machine_id: number;
+  user_id: number;
+  assigned_at: string;
+  assigned_by: number | null;
+}
+
+interface DepartmentLeader {
+  id: number;
+  department_id: number;
+  user_id: number;
+  assigned_at: string;
+  assigned_by: number | null;
+}
 
 interface HistoryEntry extends StatusHistory {
   machine?: Machine;
@@ -21,19 +89,29 @@ export default function HistoryPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [statusTypes, setStatusTypes] = useState<StatusType[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // filtreler select'ten string geliyor, biz sonra number'a çeviriyoruz
   const [machineFilter, setMachineFilter] = useState<string>('All');
   const [departmentFilter, setDepartmentFilter] = useState<string>('All');
-  const { user, profile } = useAuth();
+
+  const { profile } = useAuth();
   const { t } = useTranslation();
 
   useEffect(() => {
     loadData();
-  }, [profile?.role, user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.role, profile?.id]);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      await Promise.all([loadHistory(), loadMachines(), loadDepartments(), loadStatusTypes()]);
+
+      await Promise.all([
+        loadMachines(),
+        loadDepartments(),
+        loadStatusTypes(),
+        loadHistory(),
+      ]);
     } catch (error) {
       console.error('Error loading history:', error);
     } finally {
@@ -43,13 +121,10 @@ export default function HistoryPage() {
 
   const loadMachines = async () => {
     try {
-      const { data, error } = await supabase
-        .from('machines')
-        .select('*')
-        .order('machine_code');
-
-      if (error) throw error;
-      setMachines(data || []);
+      const data = await api.get<Machine[]>('/machines');
+      setMachines(
+        (data || []).slice().sort((a, b) => a.machine_code.localeCompare(b.machine_code))
+      );
     } catch (error) {
       console.error('Error loading machines:', error);
     }
@@ -57,13 +132,10 @@ export default function HistoryPage() {
 
   const loadDepartments = async () => {
     try {
-      const { data, error } = await supabase
-        .from('departments')
-        .select('*')
-        .order('name');
-
-      if (error) throw error;
-      setDepartments(data || []);
+      const data = await api.get<Department[]>('/departments');
+      setDepartments(
+        (data || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+      );
     } catch (error) {
       console.error('Error loading departments:', error);
     }
@@ -71,14 +143,12 @@ export default function HistoryPage() {
 
   const loadStatusTypes = async () => {
     try {
-      const { data, error } = await supabase
-        .from('status_types')
-        .select('*')
-        .eq('is_active', true)
-        .order('display_order');
-
-      if (error) throw error;
-      setStatusTypes(data || []);
+      const data = await api.get<StatusType[]>('/status-types?only_active=true');
+      setStatusTypes(
+        (data || [])
+          .slice()
+          .sort((a, b) => a.display_order - b.display_order)
+      );
     } catch (error) {
       console.error('Error loading status types:', error);
     }
@@ -86,68 +156,87 @@ export default function HistoryPage() {
 
   const loadHistory = async () => {
     try {
-      let query = supabase
-        .from('status_history')
-        .select('*')
-        .order('changed_at', { ascending: false });
+      // 1) tüm history'yi çek
+      let historyData = await api.get<StatusHistory[]>('/status-history');
 
-      if (user && profile?.role === 'operator') {
-        const { data: assignments } = await supabase
-          .from('machine_operators')
-          .select('machine_id')
-          .eq('user_id', user.id);
+      // 2) rol bazlı filtreler (profile.id -> profiles tablosundaki id)
+      if (profile?.role === 'operator') {
+        const userId = profile.id;
 
-        const machineIds = assignments?.map(a => a.machine_id) || [];
+        const assignments = await api.get<MachineOperator[]>(
+          `/machine-operators?user_id=${userId}`
+        );
+        const machineIds = (assignments || []).map((a) => a.machine_id);
+
         if (machineIds.length > 0) {
-          query = query.in('machine_id', machineIds);
+          historyData = historyData.filter((h) => machineIds.includes(h.machine_id));
         } else {
-          query = query.eq('machine_id', '00000000-0000-0000-0000-000000000000');
+          historyData = [];
         }
-      } else if (user && profile?.role === 'team_leader') {
-        const { data: myDepts } = await supabase
-          .from('department_leaders')
-          .select('department_id')
-          .eq('user_id', user.id);
+      } else if (profile?.role === 'team_leader') {
+        const userId = profile.id;
 
-        const deptIds = myDepts?.map(d => d.department_id) || [];
+        const deptLeaders = await api.get<DepartmentLeader[]>(
+          `/department-leaders?user_id=${userId}`
+        );
+        const deptIds = (deptLeaders || []).map((d) => d.department_id);
 
         if (deptIds.length > 0) {
-          const { data: deptMachines } = await supabase
-            .from('machines')
-            .select('id')
-            .in('department_id', deptIds);
+          const allMachines = await api.get<Machine[]>('/machines');
+          const allowedMachineIds = (allMachines || [])
+            .filter((m) => m.department_id && deptIds.includes(m.department_id))
+            .map((m) => m.id);
 
-          const machineIds = deptMachines?.map(m => m.id) || [];
-          if (machineIds.length > 0) {
-            query = query.in('machine_id', machineIds);
+          if (allowedMachineIds.length > 0) {
+            historyData = historyData.filter((h) =>
+              allowedMachineIds.includes(h.machine_id)
+            );
           } else {
-            query = query.eq('machine_id', '00000000-0000-0000-0000-000000000000');
+            historyData = [];
           }
         } else {
-          query = query.eq('machine_id', '00000000-0000-0000-0000-000000000000');
+          historyData = [];
         }
       }
+      // admin veya login olmayanlar için -> hiçbir ek filtre yok
 
-      const { data: historyData, error: historyError } = await query;
+      // 3) ilgili machine ve user bilgilerini enrich etmek
+      const machineIds = Array.from(
+        new Set((historyData || []).map((h) => h.machine_id))
+      );
+      const userIds = Array.from(
+        new Set((historyData || []).map((h) => h.changed_by))
+      );
 
-      if (historyError) throw historyError;
-
-      const machineIds = [...new Set(historyData?.map(h => h.machine_id) || [])];
-      const userIds = [...new Set(historyData?.map(h => h.changed_by) || [])];
-
-      const [{ data: machinesData }, { data: profiles }] = await Promise.all([
-        supabase.from('machines').select('*').in('id', machineIds),
-        supabase.from('profiles').select('id, full_name').in('id', userIds),
+      const [allMachines, profiles] = await Promise.all([
+        api.get<Machine[]>('/machines'),
+        api.get<Profile[]>('/profiles'),
       ]);
 
-      const machineMap = new Map(machinesData?.map(m => [m.id, m]) || []);
-      const userMap = new Map(profiles?.map(p => [p.id, p.full_name]) || []);
+      const machineMap = new Map<number, Machine>(
+        (allMachines || [])
+          .filter((m) => machineIds.includes(m.id))
+          .map((m) => [m.id, m])
+      );
 
-      const enrichedHistory = historyData?.map(h => ({
-        ...h,
-        machine: machineMap.get(h.machine_id),
-        user_name: userMap.get(h.changed_by) || 'Bilinmeyen Kullanıcı',
-      })) || [];
+      const userMap = new Map<number, string>(
+        (profiles || [])
+          .filter((p) => userIds.includes(p.id))
+          .map((p) => [p.id, p.full_name])
+      );
+
+      const enrichedHistory: HistoryEntry[] = (historyData || [])
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(b.changed_at).getTime() -
+            new Date(a.changed_at).getTime()
+        )
+        .map((h) => ({
+          ...h,
+          machine: machineMap.get(h.machine_id),
+          user_name: userMap.get(h.changed_by) || 'Bilinmeyen Kullanıcı',
+        }));
 
       setHistory(enrichedHistory);
     } catch (error) {
@@ -155,20 +244,27 @@ export default function HistoryPage() {
     }
   };
 
+  // ---- filtreler ----
   let filteredHistory = history;
 
   if (departmentFilter !== 'All') {
-    const deptMachines = machines.filter(m => m.department_id === departmentFilter);
-    const deptMachineIds = deptMachines.map(m => m.id);
-    filteredHistory = filteredHistory.filter(h => deptMachineIds.includes(h.machine_id));
+    const deptId = Number(departmentFilter);
+    const deptMachines = machines.filter((m) => m.department_id === deptId);
+    const deptMachineIds = deptMachines.map((m) => m.id);
+    filteredHistory = filteredHistory.filter((h) =>
+      deptMachineIds.includes(h.machine_id)
+    );
   }
 
   if (machineFilter !== 'All') {
-    filteredHistory = filteredHistory.filter(h => h.machine_id === machineFilter);
+    const machineId = Number(machineFilter);
+    filteredHistory = filteredHistory.filter(
+      (h) => h.machine_id === machineId
+    );
   }
 
   const getStatusColor = (status: string) => {
-    const statusType = statusTypes.find(st => st.name === status);
+    const statusType = statusTypes.find((st) => st.name === status);
     if (!statusType) return 'bg-gray-100 text-gray-800 border-gray-200';
 
     const colorMap: Record<string, string> = {
@@ -185,14 +281,6 @@ export default function HistoryPage() {
     return colorMap[statusType.color] || colorMap.gray;
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return {
-      date: date.toLocaleDateString(),
-      time: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-  };
-
   if (loading) {
     return (
       <div className="text-center py-12">
@@ -207,10 +295,13 @@ export default function HistoryPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <History className="w-8 h-8 text-gray-700" />
-          <h2 className="text-2xl font-bold text-gray-900">Durum Değişikliği Geçmişi</h2>
+          <h2 className="text-2xl font-bold text-gray-900">
+            Durum Değişikliği Geçmişi
+          </h2>
         </div>
       </div>
 
+      {/* Filtreler */}
       <div className="bg-white border border-gray-200 rounded-lg p-4">
         <div className="flex items-center space-x-2 mb-3">
           <Filter className="w-5 h-5 text-gray-700" />
@@ -228,7 +319,7 @@ export default function HistoryPage() {
             >
               <option value="All">Tüm Bölümler</option>
               {departments.map((dept) => (
-                <option key={dept.id} value={dept.id}>
+                <option key={dept.id} value={String(dept.id)}>
                   {dept.name}
                 </option>
               ))}
@@ -245,7 +336,7 @@ export default function HistoryPage() {
             >
               <option value="All">Tüm Makineler</option>
               {machines.map((machine) => (
-                <option key={machine.id} value={machine.id}>
+                <option key={machine.id} value={String(machine.id)}>
                   {machine.machine_code} - {machine.machine_name}
                 </option>
               ))}
@@ -254,6 +345,7 @@ export default function HistoryPage() {
         </div>
       </div>
 
+      {/* Liste */}
       {filteredHistory.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
           <History className="w-12 h-12 mx-auto mb-3 text-gray-300" />
@@ -262,7 +354,6 @@ export default function HistoryPage() {
       ) : (
         <div className="space-y-4">
           {filteredHistory.map((entry) => {
-            // const { date, time } = formatDate(entry.changed_at);
             const lastUpdate = new Date(entry.changed_at);
             return (
               <div
@@ -283,11 +374,11 @@ export default function HistoryPage() {
                       <Calendar className="w-4 h-4" />
                       {t('machines.updatedAt', {
                         date: lastUpdate.toLocaleDateString(),
-                        time: lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        time: lastUpdate.toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        }),
                       })}
-                      {/* <span>
-                        {date} at {time}
-                      </span> */}
                     </div>
                   </div>
                 </div>
@@ -295,13 +386,21 @@ export default function HistoryPage() {
                 <div className="flex items-center space-x-3 mb-4">
                   {entry.previous_status && (
                     <>
-                      <div className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(entry.previous_status)}`}>
+                      <div
+                        className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(
+                          entry.previous_status
+                        )}`}
+                      >
                         {entry.previous_status}
                       </div>
                       <ArrowRight className="w-5 h-5 text-gray-400" />
                     </>
                   )}
-                  <div className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(entry.status)}`}>
+                  <div
+                    className={`px-3 py-1 rounded-full text-sm font-semibold border ${getStatusColor(
+                      entry.status
+                    )}`}
+                  >
                     {entry.status}
                   </div>
                 </div>

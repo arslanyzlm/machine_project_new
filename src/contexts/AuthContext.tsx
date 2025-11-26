@@ -1,118 +1,157 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import { User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+// src/contexts/AuthContext.tsx
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  ReactNode,
+} from 'react';
+import { api } from '../lib/api';
 
-interface Profile {
-  id: string;
+export interface Profile {
+  id: number;
   email: string;
   full_name: string;
-  role: 'admin' | 'operator' | 'viewer';
+  role: 'admin' | 'team_leader' | 'operator';
+}
+
+interface AuthUser {
+  id: number;
+  email: string;
 }
 
 interface AuthContextType {
-  user: User | null;
+  user: AuthUser | null;
   profile: Profile | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
+  signIn: (
+    email: string,
+    password: string
+  ) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    fullName: string
+  ) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+// Tarayıcı tarafında login bilgisini saklamak için key
+const STORAGE_KEY = 'machine_dashboard_profile';
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Sayfa yenilendiğinde daha önce login olan kullanıcıyı localStorage'dan yükle
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        loadProfile(session.user.id);
-      } else {
+    const init = async () => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed: Profile = JSON.parse(stored);
+          setProfile(parsed);
+          setUser({ id: parsed.id, email: parsed.email });
+        }
+      } catch (err) {
+        console.error('Error restoring auth from storage:', err);
+      } finally {
         setLoading(false);
       }
-    });
+    };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          await loadProfile(session.user.id);
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
-      })();
-    });
-
-    return () => subscription.unsubscribe();
+    init();
   }, []);
 
-  const loadProfile = async (userId: string) => {
+  // --- Giriş --- //
+  const signIn = async (
+    email: string,
+    password: string
+  ): Promise<{ error: Error | null }> => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (error) throw error;
-      setProfile(data);
-    } catch (error) {
-      console.error('Error loading profile:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const signIn = async (email: string, password: string) => {
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      return { error: error as Error | null };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
-
-  const signUp = async (email: string, password: string, fullName: string) => {
-    try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      // Backend: POST /auth/login  (body: { email, password })
+      const loggedInProfile = await api.post<Profile>('/auth/login', {
         email,
         password,
       });
 
-      if (authError) throw authError;
-      if (!authData.user) throw new Error('No user returned from signup');
+      setProfile(loggedInProfile);
+      setUser({
+        id: loggedInProfile.id,
+        email: loggedInProfile.email,
+      });
 
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert({
-          id: authData.user.id,
-          email,
-          full_name: fullName,
-          role: 'viewer',
-        });
-
-      if (profileError) throw profileError;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(loggedInProfile));
 
       return { error: null };
-    } catch (error) {
-      return { error: error as Error };
+    } catch (err: any) {
+      console.error('signIn error:', err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Giriş yapılırken bir hata oluştu';
+      return { error: new Error(message) };
     }
   };
 
+  // --- Kayıt --- //
+  const signUp = async (
+    email: string,
+    password: string,
+    fullName: string
+  ): Promise<{ error: Error | null }> => {
+    try {
+      // Backend: POST /profiles  (schemas.ProfileCreate)
+      // Yeni kullanıcıları default olarak "operator" role ile oluşturuyoruz
+      const newProfile = await api.post<Profile>('/profiles', {
+        email,
+        full_name: fullName,
+        role: 'operator',
+        password,
+      });
+
+      // İstersen otomatik login yapabiliriz:
+      setProfile(newProfile);
+      setUser({
+        id: newProfile.id,
+        email: newProfile.email,
+      });
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newProfile));
+
+      return { error: null };
+    } catch (err: any) {
+      console.error('signUp error:', err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Kayıt olurken bir hata oluştu';
+      return { error: new Error(message) };
+    }
+  };
+
+  // --- Çıkış --- //
   const signOut = async () => {
-    await supabase.auth.signOut();
+    // Backend tarafında session olmadığı için sadece frontu temizliyoruz
+    setUser(null);
     setProfile(null);
+    localStorage.removeItem(STORAGE_KEY);
   };
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        loading,
+        signIn,
+        signUp,
+        signOut,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

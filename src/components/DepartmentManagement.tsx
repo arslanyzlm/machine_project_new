@@ -1,20 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Building2, Plus, Trash2, Users, X } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { Building2, Plus, Trash2, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { api } from '../lib/api';
 
-type Department = Database['public']['Tables']['departments']['Row'];
-type Profile = Database['public']['Tables']['profiles']['Row'];
+interface Department {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+  created_by: number | null;
+}
 
 export default function DepartmentManagement() {
   const [departments, setDepartments] = useState<Department[]>([]);
-  const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newDeptName, setNewDeptName] = useState('');
   const [newDeptDesc, setNewDeptDesc] = useState('');
-  const { user } = useAuth();
+  const { profile } = useAuth(); // created_by göndermek istersen kullanacağız
 
   useEffect(() => {
     loadData();
@@ -23,13 +26,12 @@ export default function DepartmentManagement() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [{ data: depts }, { data: usersData }] = await Promise.all([
-        supabase.from('departments').select('*').order('name'),
-        supabase.from('profiles').select('*').order('full_name'),
-      ]);
 
-      setDepartments(depts || []);
-      setUsers(usersData || []);
+      const depts = await api.get<Department[]>('/departments');
+
+      setDepartments(
+        (depts || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+      );
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -42,13 +44,11 @@ export default function DepartmentManagement() {
     if (!newDeptName.trim()) return;
 
     try {
-      const { error } = await supabase.from('departments').insert({
+      await api.post('/departments', {
         name: newDeptName,
         description: newDeptDesc,
-        created_by: user?.id,
+        created_by: profile?.id,  // istersen aç
       });
-
-      if (error) throw error;
 
       setNewDeptName('');
       setNewDeptDesc('');
@@ -59,12 +59,11 @@ export default function DepartmentManagement() {
     }
   };
 
-  const handleDeleteDepartment = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this department?')) return;
+  const handleDeleteDepartment = async (id: number) => {
+    if (!confirm('Bu bölümü silmek istediğinize emin misiniz?')) return;
 
     try {
-      const { error } = await supabase.from('departments').delete().eq('id', id);
-      if (error) throw error;
+      await api.del(`/departments/${id}`);
       loadData();
     } catch (error) {
       console.error('Error deleting department:', error);
@@ -139,7 +138,7 @@ export default function DepartmentManagement() {
                   value={newDeptName}
                   onChange={(e) => setNewDeptName(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-                  placeholder="e.g., Production Floor A"
+                  placeholder="Örn: Ekstrüzyon 1"
                   required
                 />
               </div>

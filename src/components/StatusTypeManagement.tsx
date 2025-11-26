@@ -1,10 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Tag, Plus, X, Edit2, Trash2, AlertCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 
-type StatusType = Database['public']['Tables']['status_types']['Row'];
+interface StatusType {
+  id: number;
+  name: string;
+  color: string; // 'green', 'blue', 'gray'...
+  is_default: boolean;
+  is_active: boolean;
+  display_order: number;
+  created_at: string;
+  created_by: number | null;
+}
 
 const colorOptions = [
   { value: 'green', label: 'Green', bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-200' },
@@ -27,7 +35,9 @@ export default function StatusTypeManagement() {
     color: 'gray',
   });
   const [error, setError] = useState<string | null>(null);
-  const { user } = useAuth();
+
+  // created_by için profile.id kullanacağız
+  const { profile } = useAuth();
 
   useEffect(() => {
     loadStatusTypes();
@@ -36,15 +46,12 @@ export default function StatusTypeManagement() {
   const loadStatusTypes = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('status_types')
-        .select('*')
-        .order('display_order');
-
-      if (error) throw error;
-      setStatusTypes(data || []);
-    } catch (error) {
-      console.error('Error loading status types:', error);
+      // backend: GET /status-types
+      const data = await api.get<StatusType[]>('/status-types');
+      const sorted = (data || []).slice().sort((a, b) => a.display_order - b.display_order);
+      setStatusTypes(sorted);
+    } catch (err) {
+      console.error('Error loading status types:', err);
     } finally {
       setLoading(false);
     }
@@ -56,64 +63,66 @@ export default function StatusTypeManagement() {
 
     try {
       if (editingStatus) {
-        const { error } = await supabase
-          .from('status_types')
-          .update({
-            name: formData.name,
-            color: formData.color,
-          })
-          .eq('id', editingStatus.id);
-
-        if (error) throw error;
+        // backend: PUT /status-types/:id
+        await api.put<StatusType>(`/status-types/${editingStatus.id}`, {
+          name: formData.name,
+          color: formData.color,
+        });
       } else {
-        const maxOrder = Math.max(...statusTypes.map(s => s.display_order), 0);
-        const { error } = await supabase.from('status_types').insert({
+        const maxOrder =
+          statusTypes.length > 0
+            ? Math.max(...statusTypes.map((s) => s.display_order))
+            : 0;
+
+        // backend: POST /status-types
+        await api.post<StatusType>('/status-types', {
           name: formData.name,
           color: formData.color,
           display_order: maxOrder + 1,
-          created_by: user?.id,
+          created_by: profile?.id ?? null,
         });
-
-        if (error) throw error;
       }
 
       setFormData({ name: '', color: 'gray' });
       setShowModal(false);
       setEditingStatus(null);
-      loadStatusTypes();
+      await loadStatusTypes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save status type');
+      setError(
+        err instanceof Error ? err.message : 'Failed to save status type'
+      );
     }
   };
 
   const handleToggleActive = async (status: StatusType) => {
     try {
-      const { error } = await supabase
-        .from('status_types')
-        .update({ is_active: !status.is_active })
-        .eq('id', status.id);
-
-      if (error) throw error;
-      loadStatusTypes();
-    } catch (error) {
-      console.error('Error toggling status:', error);
+      // burada name + color + is_active birlikte gönderiyoruz
+      // backend tarafında StatusTypeUpdate'e is_active: Optional[bool] eklemen lazım
+      await api.put<StatusType>(`/status-types/${status.id}`, {
+        name: status.name,
+        color: status.color,
+        is_active: !status.is_active,
+      });
+      await loadStatusTypes();
+    } catch (err) {
+      console.error('Error toggling status:', err);
     }
   };
 
   const handleDelete = async (status: StatusType) => {
     if (status.is_default) {
-      alert('Cannot delete default status types');
+      alert('Varsayılan durum tipleri silinemez.');
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete "${status.name}"?`)) return;
+    if (!confirm(`"${status.name}" durum tipini silmek istediğine emin misin?`)) return;
 
     try {
-      const { error } = await supabase.from('status_types').delete().eq('id', status.id);
-      if (error) throw error;
-      loadStatusTypes();
-    } catch (error) {
-      console.error('Error deleting status type:', error);
+      // backend: DELETE /status-types/:id
+      await api.del<void>(`/status-types/${status.id}`);
+      await loadStatusTypes();
+    } catch (err) {
+      console.error('Error deleting status type:', err);
     }
   };
 
@@ -134,7 +143,7 @@ export default function StatusTypeManagement() {
   };
 
   const getColorClasses = (color: string) => {
-    const colorOption = colorOptions.find(c => c.value === color);
+    const colorOption = colorOptions.find((c) => c.value === color);
     return colorOption || colorOptions[colorOptions.length - 1];
   };
 
@@ -174,14 +183,20 @@ export default function StatusTypeManagement() {
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex-1">
-                  <div className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${colorClasses.bg} ${colorClasses.text} ${colorClasses.border}`}>
+                  <div
+                    className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${colorClasses.bg} ${colorClasses.text} ${colorClasses.border}`}
+                  >
                     {status.name}
                   </div>
                   {status.is_default && (
-                    <span className="ml-2 text-xs text-gray-500">(Varsayılan)</span>
+                    <span className="ml-2 text-xs text-gray-500">
+                      (Varsayılan)
+                    </span>
                   )}
                   {!status.is_active && (
-                    <span className="ml-2 text-xs text-red-600">(Inactive)</span>
+                    <span className="ml-2 text-xs text-red-600">
+                      (Inactive)
+                    </span>
                   )}
                 </div>
               </div>
@@ -224,7 +239,10 @@ export default function StatusTypeManagement() {
               <h3 className="text-xl font-bold text-gray-900">
                 {editingStatus ? 'Durum Türü Güncelle' : 'Durum Türü Ekle'}
               </h3>
-              <button onClick={closeModal} className="text-gray-400 hover:text-gray-600">
+              <button
+                onClick={closeModal}
+                className="text-gray-400 hover:text-gray-600"
+              >
                 <X className="w-6 h-6" />
               </button>
             </div>
@@ -237,7 +255,9 @@ export default function StatusTypeManagement() {
                 <input
                   type="text"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                   placeholder="e.g., Calibration, Cleaning"
                   required
@@ -253,7 +273,9 @@ export default function StatusTypeManagement() {
                     <button
                       key={color.value}
                       type="button"
-                      onClick={() => setFormData({ ...formData, color: color.value })}
+                      onClick={() =>
+                        setFormData({ ...formData, color: color.value })
+                      }
                       className={`px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${
                         formData.color === color.value
                           ? `${color.bg} ${color.text} ${color.border} ring-2 ring-gray-900`
@@ -285,7 +307,7 @@ export default function StatusTypeManagement() {
                   type="submit"
                   className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800"
                 >
-                  Durum {editingStatus ? 'Güncelle' : 'Ekle'} 
+                  Durum {editingStatus ? 'Güncelle' : 'Ekle'}
                 </button>
               </div>
             </form>

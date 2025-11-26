@@ -1,13 +1,56 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, Calendar, Filter, BarChart3, ChevronDown, X } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { Database } from '../lib/database.types';
+import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 
-type Machine = Database['public']['Tables']['machines']['Row'];
-type Department = Database['public']['Tables']['departments']['Row'];
-type StatusType = Database['public']['Tables']['status_types']['Row'];
-type StatusHistory = Database['public']['Tables']['status_history']['Row'];
+interface Machine {
+  id: number;
+  machine_code: string;
+  machine_name: string;
+  description: string;
+  current_status: string;
+  last_updated_at: string;
+  last_updated_by: number | null;
+  created_at: string;
+  department_id: number | null;
+}
+
+interface Department {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+  created_by: number | null;
+}
+
+interface StatusType {
+  id: number;
+  name: string;
+  color: string; // 'green', 'red', 'gray'...
+  is_default: boolean;
+  is_active: boolean;
+  display_order: number;
+  created_at: string;
+  created_by: number | null;
+}
+
+interface StatusHistory {
+  id: number;
+  machine_id: number;
+  status: string;
+  previous_status: string | null;
+  comment: string | null;
+  changed_by: number;
+  changed_at: string;
+}
+
+interface DepartmentLeader {
+  id: number;
+  department_id: number;
+  user_id: number;
+  assigned_at: string;
+  assigned_by: number | null;
+}
 
 interface StatusDuration {
   status: string;
@@ -16,7 +59,7 @@ interface StatusDuration {
 }
 
 interface MachineReport {
-  machineId: string;
+  machineId: number;
   machineCode: string;
   machineName: string;
   statusDurations: StatusDuration[];
@@ -37,14 +80,12 @@ interface TimelineSegment {
 }
 
 interface MachineTimeline {
-  machineId: string;
+  machineId: number;
   machineCode: string;
   machineName: string;
   segments: TimelineSegment[];
 }
 
-// ---- helpers ----
-// const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 const formatLocalDateTimeForInput = (date: Date) => {
@@ -54,7 +95,7 @@ const formatLocalDateTimeForInput = (date: Date) => {
   const day = pad(date.getDate());
   const hours = pad(date.getHours());
   const minutes = pad(date.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`; // YYYY-MM-DDTHH:MM
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
 export default function ReportsPage() {
@@ -63,7 +104,7 @@ export default function ReportsPage() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [statusTypes, setStatusTypes] = useState<StatusType[]>([]);
   const [loading, setLoading] = useState(false);
-  const [teamLeaderDepartments, setTeamLeaderDepartments] = useState<string[]>([]);
+  const [teamLeaderDepartments, setTeamLeaderDepartments] = useState<number[]>([]);
   const [report, setReport] = useState<DepartmentReport | null>(null);
   const [timeline, setTimeline] = useState<MachineTimeline[]>([]);
   const [activeTab, setActiveTab] = useState<'summary' | 'timeline'>('summary');
@@ -81,21 +122,19 @@ export default function ReportsPage() {
   const [filters, setFilters] = useState(() => {
     const now = new Date();
     const oneDayAgo = new Date(now.getTime() - ONE_DAY_MS);
-    // const oneWeekAgo = new Date(now.getTime() - ONE_WEEK_MS);
     return {
       departmentId: 'all' as string,
-      machineIds: [] as string[], // çoklu makine seçimi
-      startDate: formatLocalDateTimeForInput(oneDayAgo),//oneWeekAgo),
+      machineIds: [] as string[], // string tutuyoruz, makine.id'den String() ile dolduracağız
+      startDate: formatLocalDateTimeForInput(oneDayAgo),
       endDate: formatLocalDateTimeForInput(now),
     };
   });
 
   // ---- derived values ----
-
   const effectiveEndTime = useMemo(() => {
     const end = new Date(filters.endDate).getTime();
     const now = Date.now();
-    return Math.min(end, now); // geleceğe taşmasın
+    return Math.min(end, now);
   }, [filters.endDate]);
 
   const availableDepartments = useMemo(
@@ -115,7 +154,8 @@ export default function ReportsPage() {
         : machines;
 
     if (filters.departmentId !== 'all') {
-      return source.filter((m) => m.department_id === filters.departmentId);
+      const deptIdNum = Number(filters.departmentId);
+      return source.filter((m) => m.department_id === deptIdNum);
     }
     return source;
   }, [machines, filters.departmentId, profile?.role, teamLeaderDepartments]);
@@ -138,42 +178,36 @@ export default function ReportsPage() {
   }, []);
 
   // ---- initial load ----
-
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        await Promise.all([
-          supabase
-            .from('departments')
-            .select('*')
-            .order('name')
-            .then(({ data }) => {
-              setDepartments(data || []);
-            }),
-          supabase
-            .from('machines')
-            .select('*')
-            .order('machine_code')
-            .then(({ data }) => {
-              setMachines(data || []);
-            }),
-          supabase
-            .from('status_types')
-            .select('*')
-            .eq('is_active', true)
-            .order('display_order')
-            .then(({ data }) => {
-              setStatusTypes(data || []);
-            }),
-          (async () => {
-            if (profile?.role !== 'team_leader' || !user?.id) return;
-            const { data } = await supabase
-              .from('department_leaders')
-              .select('department_id')
-              .eq('user_id', user.id);
-            setTeamLeaderDepartments(data?.map((d) => d.department_id) || []);
-          })(),
+        const [
+          departmentsData,
+          machinesData,
+          statusTypesData,
+          leaderRows,
+        ] = await Promise.all([
+          api.get<Department[]>('/departments'),
+          api.get<Machine[]>('/machines'),
+          api.get<StatusType[]>('/status-types?only_active=true'),
+          profile?.role === 'team_leader' && user?.id
+            ? api.get<DepartmentLeader[]>(
+                `/department-leaders?user_id=${user.id}`
+              )
+            : Promise.resolve([] as DepartmentLeader[]),
         ]);
+
+        departmentsData.sort((a, b) => a.name.localeCompare(b.name));
+        machinesData.sort((a, b) => a.machine_code.localeCompare(b.machine_code));
+        statusTypesData.sort((a, b) => a.display_order - b.display_order);
+
+        setDepartments(departmentsData);
+        setMachines(machinesData);
+        setStatusTypes(statusTypesData);
+
+        if (profile?.role === 'team_leader' && leaderRows && leaderRows.length > 0) {
+          setTeamLeaderDepartments(leaderRows.map((d) => d.department_id));
+        }
       } catch (err) {
         console.error('Error loading initial data:', err);
       }
@@ -183,7 +217,6 @@ export default function ReportsPage() {
   }, [profile?.role, user?.id]);
 
   // ---- report generation ----
-
   const generateReport = async () => {
     setLoading(true);
     try {
@@ -193,13 +226,13 @@ export default function ReportsPage() {
       let targetMachines: Machine[] = [];
 
       if (filters.machineIds.length > 0) {
-        // seçili makineler öncelikli
-        targetMachines = machines.filter((m) => filters.machineIds.includes(m.id));
+        targetMachines = machines.filter((m) =>
+          filters.machineIds.includes(String(m.id))
+        );
       } else if (filters.departmentId !== 'all') {
-        // sonra bölüm filtresi
-        targetMachines = machines.filter((m) => m.department_id === filters.departmentId);
+        const deptIdNum = Number(filters.departmentId);
+        targetMachines = machines.filter((m) => m.department_id === deptIdNum);
       } else {
-        // hiçbiri yoksa tüm makineler
         targetMachines = machines;
       }
 
@@ -216,13 +249,9 @@ export default function ReportsPage() {
       for (const machine of targetMachines) {
         const machineCreatedAt = new Date(machine.created_at).getTime();
 
-        const { data: historyData, error } = await supabase
-          .from('status_history')
-          .select('*')
-          .eq('machine_id', machine.id)
-          .order('changed_at', { ascending: true });
-
-        if (error) throw error;
+        const historyData = await api.get<StatusHistory[]>(
+          `/machines/${machine.id}/history`
+        );
 
         const history = (historyData || []).filter(
           (h) => new Date(h.changed_at).getTime() >= machineCreatedAt
@@ -272,7 +301,6 @@ export default function ReportsPage() {
               departmentStatusTotals[currentStatus] =
                 (departmentStatusTotals[currentStatus] || 0) + duration;
 
-              // timeline segmenti
               segments.push({
                 status: currentStatus,
                 startTime: currentPeriodStart,
@@ -282,7 +310,6 @@ export default function ReportsPage() {
             }
           }
 
-          // yine "status" kolonu
           currentStatus = current.status;
           currentPeriodStart = Math.max(changeTime, reportStartTime);
         }
@@ -452,10 +479,16 @@ export default function ReportsPage() {
     setFilters((prev) => ({
       ...prev,
       departmentId: value,
-      machineIds: [], // bölüm değişince seçili makineleri sıfırla
+      machineIds: [], // bölüm değişince makine seçimini sıfırla
     }));
   };
 
+  const selectedDeptName =
+  filters.departmentId !== 'all'
+    ? departments.find((d) => d.id === Number(filters.departmentId))?.name
+    : undefined;
+
+  // ---- JSX ----
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -473,7 +506,7 @@ export default function ReportsPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Departman - tek seçim */}
+          {/* Departman (single) */}
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">
               Bölüm
@@ -485,14 +518,14 @@ export default function ReportsPage() {
             >
               <option value="all">Tüm Bölümler</option>
               {availableDepartments.map((dept) => (
-                <option key={dept.id} value={dept.id}>
+                <option key={dept.id} value={String(dept.id)}>
                   {dept.name}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Makine - çoklu seçim dropdown */}
+          {/* Makineler (multi) */}
           <div className="relative" ref={machineDropdownRef}>
             <label className="block text-sm font-semibold text-gray-700 mb-2">
               Makineler
@@ -512,7 +545,7 @@ export default function ReportsPage() {
             {filters.machineIds.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-2">
                 {filters.machineIds.map((machineId) => {
-                  const machine = machines.find((m) => m.id === machineId);
+                  const machine = machines.find((m) => String(m.id) === machineId);
                   return machine ? (
                     <span
                       key={machineId}
@@ -537,7 +570,7 @@ export default function ReportsPage() {
                     onClick={() => {
                       setFilters((prev) => ({
                         ...prev,
-                        machineIds: availableMachines.map((m) => m.id),
+                        machineIds: availableMachines.map((m) => String(m.id)),
                       }));
                     }}
                     className="text-xs text-gray-600 hover:text-gray-900 mr-3"
@@ -560,8 +593,8 @@ export default function ReportsPage() {
                   >
                     <input
                       type="checkbox"
-                      checked={filters.machineIds.includes(machine.id)}
-                      onChange={() => toggleMachineSelection(machine.id)}
+                      checked={filters.machineIds.includes(String(machine.id))}
+                      onChange={() => toggleMachineSelection(String(machine.id))}
                       className="rounded border-gray-300"
                     />
                     <span className="text-sm text-gray-700">
@@ -611,7 +644,15 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* Tabs + içerik */}
+      {/* Tabs + içerik (bundan sonrası mantık olarak seninkiyle aynı, sadece tipler düzeltildi) */}
+      {/* ... aynen senin JSX’in devam ediyor ... */}
+      {/* Burayı olduğu gibi bırakabilirsin, sadece supabase bağımlılığı kalmadı. */}
+      
+      {/* AŞAĞIYA senin orijinal JSX’ini kopyalayıp sadece küçük tip fixlerini uyguladım;
+          mesaj çok uzamasın diye yukarıda kestim, ama bire bir kullandığın JSX’i
+          bu yeni tiplerle gömebilirsin. */}
+
+                {/* Tabs + içerik */}
       <div className="bg-white border border-gray-200 rounded-lg">
         <div className="border-b border-gray-200">
           <nav className="flex space-x-4 px-6">
@@ -660,10 +701,8 @@ export default function ReportsPage() {
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">
                   {filters.machineIds.length > 0
                     ? `Seçili Makineler (${filters.machineIds.length})`
-                    : filters.departmentId !== 'all'
-                    ? `Bölüm Raporu: ${
-                        departments.find((d) => d.id === filters.departmentId)?.name
-                      }`
+                    : filters.departmentId !== 'all' && selectedDeptName
+                    ? `Bölüm Raporu: ${selectedDeptName}`
                     : 'Genel Rapor'}
                 </h3>
 
@@ -930,3 +969,4 @@ export default function ReportsPage() {
     </div>
   );
 }
+
