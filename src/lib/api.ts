@@ -1,5 +1,5 @@
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  import.meta.env.VITE_API_BASE_URL ?? "http://192.168.150.230:8000";
 
 function buildQuery(params?: Record<string, any>) {
   if (!params) return "";
